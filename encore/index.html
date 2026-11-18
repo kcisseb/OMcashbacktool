@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Encore</title>
+  <meta name="description" content="A camera for live music: every photo remembers the song, the sound, the place and the night.">
+  <meta name="theme-color" content="#0b0b10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Encore">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- CAMERA -->
+  <section id="view-camera" class="view active" aria-label="Camera">
+    <video id="viewfinder" playsinline muted autoplay></video>
+    <div id="flash"></div>
+
+    <div id="cam-start" class="cam-start">
+      <div class="logo-mark" aria-hidden="true"></div>
+      <h1>Encore</h1>
+      <p>Every photo remembers the song, the sound, the place and the night.</p>
+      <button id="btn-start" class="btn-primary">Open camera</button>
+      <p class="fine">Encore needs your camera, microphone and location. Everything stays on this phone.</p>
+    </div>
+
+    <header class="cam-top">
+      <button id="venue-chip" class="chip" aria-label="Current place">
+        <span class="dot"></span><span id="venue-chip-text">Finding where you are…</span>
+      </button>
+      <button id="btn-settings" class="icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+      </button>
+    </header>
+
+    <div id="listening" class="listening" hidden>
+      <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+        <circle cx="60" cy="60" r="54" class="ring-bg"/>
+        <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg"/>
+      </svg>
+      <div class="listening-text">
+        <strong id="listen-secs">10</strong>
+        <span>Listening…</span>
+      </div>
+      <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+
+    <footer class="cam-bottom">
+      <button id="btn-last" class="thumb" aria-label="Open last photo"></button>
+      <button id="btn-shutter" class="shutter" aria-label="Take photo and identify song"><span></span></button>
+      <button id="btn-flip" class="icon-btn round" aria-label="Switch camera">
+        <svg viewBox="0 0 24 24"><path d="M20 7h-3l-2-3H9L7 7H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1Z"/><path d="M9 13.5a3 3 0 0 1 5.2-2M15 12.5a3 3 0 0 1-5.2 2"/><path d="M14 9.8l.3 1.8-1.8.2M10 16.2l-.3-1.8 1.8-.2"/></svg>
+      </button>
+    </footer>
+    <nav class="cam-tabs">
+      <button class="tab active" data-go="camera">Camera</button>
+      <button class="tab" data-go="nights">Nights</button>
+    </nav>
+  </section>
+
+  <!-- NIGHTS -->
+  <section id="view-nights" class="view page" aria-label="Your nights">
+    <header class="page-head">
+      <h2>Nights</h2>
+      <button class="link-btn" data-go="camera">Camera</button>
+    </header>
+    <div id="nights-list" class="nights-list"></div>
+    <div id="nights-empty" class="empty" hidden>
+      <div class="logo-mark small" aria-hidden="true"></div>
+      <p>No nights yet. Take a photo at your next gig and Encore will start your first one.</p>
+    </div>
+  </section>
+
+  <!-- ONE NIGHT -->
+  <section id="view-night" class="view page" aria-label="Night">
+    <header class="page-head">
+      <button class="link-btn back" data-go="nights">‹ Nights</button>
+      <button id="btn-share-night" class="link-btn">Share</button>
+    </header>
+    <div id="night-body"></div>
+  </section>
+
+  <!-- ONE CAPTURE -->
+  <section id="view-capture" class="view page" aria-label="Photo">
+    <header class="page-head">
+      <button id="btn-capture-back" class="link-btn back">‹ Back</button>
+      <button id="btn-delete" class="link-btn danger">Delete</button>
+    </header>
+    <div id="capture-body"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="view-settings" class="view page" aria-label="Settings">
+    <header class="page-head">
+      <h2>Settings</h2>
+      <button class="link-btn" data-go="camera">Done</button>
+    </header>
+    <form id="settings-form" class="settings" autocomplete="off">
+      <label class="field">
+        <span>Song recognition key (AudD)</span>
+        <input id="set-key" type="password" placeholder="Paste your AudD API token" spellcheck="false">
+        <small>Get one free at audd.io → Sign up → Dashboard → copy the API token. It's stored only on this phone.</small>
+      </label>
+      <label class="field">
+        <span>Listen for</span>
+        <select id="set-secs">
+          <option value="6">6 seconds</option>
+          <option value="10">10 seconds</option>
+          <option value="15">15 seconds</option>
+        </select>
+        <small>Longer clips recognise live music better, and you'll keep a longer sound memory.</small>
+      </label>
+      <label class="field">
+        <span>Relay address (optional)</span>
+        <input id="set-proxy" type="url" placeholder="https://encore-relay.yourname.workers.dev" spellcheck="false">
+        <small>Only needed if recognition says "blocked". See the setup guide.</small>
+      </label>
+      <button type="submit" class="btn-primary">Save</button>
+      <div class="settings-meta">
+        <button type="button" id="btn-retry" class="btn-ghost">Retry unfinished photos</button>
+        <p id="storage-info" class="fine"></p>
+      </div>
+    </form>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
