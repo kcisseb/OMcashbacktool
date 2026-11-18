@@ -58,12 +58,12 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 }
 .chip {
   display: inline-flex; align-items: center; gap: 8px; max-width: 75%; padding: 8px 14px; border-radius: 999px;
-  background: rgba(20,20,28,.6); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); font-size: 14px;
+  background: rgba(15,15,22,.78); font-size: 14px;
 }
 .chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .chip.live .dot { background: var(--ok); box-shadow: 0 0 0 4px rgba(79,209,165,.2); }
-.icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: rgba(20,20,28,.6); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: rgba(15,15,22,.78); }
 
 .cam-bottom {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; justify-content: space-around;
@@ -82,10 +82,36 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .tab { font-size: 14px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.6); padding: 6px 4px; }
 .tab.active { color: var(--accent-2); }
 
-.listening {
-  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%); z-index: 4; width: 170px; height: 170px;
-  display: grid; place-items: center; border-radius: 50%; background: rgba(10,10,16,.55); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+.listening-wrap {
+  position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 4;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
 }
+.listening {
+  position: relative; width: 170px; height: 170px;
+  display: grid; place-items: center; border-radius: 50%; background: rgba(10,10,16,.78);
+}
+.listening:active { transform: scale(.96); }
+.stop-pill { font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 999px; background: rgba(10,10,16,.78); color: var(--text); }
+
+/* while listening the shutter becomes a stop button */
+.shutter.recording span { width: 32px; height: 32px; border-radius: 8px; background: var(--accent); }
+
+/* result banner on the camera screen */
+.result {
+  position: absolute; left: 12px; right: 12px; bottom: calc(var(--safe-bottom) + 190px); z-index: 4;
+  display: grid; grid-template-columns: 52px 1fr auto; gap: 12px; align-items: center; text-align: left;
+  padding: 10px 10px 10px 10px; border-radius: 18px; background: rgba(21,21,29,.94); box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  animation: rise .25s ease-out;
+}
+@keyframes rise { from { transform: translateY(16px); opacity: 0; } }
+.result .r-art { width: 52px; height: 52px; border-radius: 10px; background: var(--surface-2) center/cover; display: grid; place-items: center; font-size: 24px; }
+.result .r-title { font-weight: 700; font-size: 16px; line-height: 1.2; }
+.result .r-sub { color: var(--muted); font-size: 13px; line-height: 1.3; margin-top: 2px; }
+.result .r-actions { display: flex; flex-direction: column; gap: 6px; }
+.result .r-btn { font-size: 13px; font-weight: 700; padding: 8px 12px; border-radius: 10px; background: var(--surface-2); white-space: nowrap; }
+.result .r-btn.main { background: var(--grad); color: #160a10; }
+.result.found { box-shadow: 0 0 0 1.5px rgba(255,79,123,.6), 0 10px 30px rgba(0,0,0,.4); }
+.result .r-close { position: absolute; top: -8px; right: -6px; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); font-size: 14px; line-height: 26px; text-align: center; }
 .ring { position: absolute; inset: 10px; width: calc(100% - 20px); height: calc(100% - 20px); transform: rotate(-90deg); }
 .ring circle { fill: none; stroke-width: 6; }
 .ring-bg { stroke: rgba(255,255,255,.12); }

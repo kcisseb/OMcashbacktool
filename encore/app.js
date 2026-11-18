@@ -42,6 +42,31 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), ms);
   }
 
+  // ---------- haptics ----------
+  // iPhone Safari ignores navigator.vibrate. On iOS 18+, toggling a hidden
+  // <input switch> produces the system "tick", so we use that as the fallback.
+  const hapticLabel = (() => {
+    const l = document.createElement('label');
+    l.setAttribute('aria-hidden', 'true');
+    l.style.cssText = 'position:fixed;left:-200px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    const i = document.createElement('input');
+    i.type = 'checkbox';
+    i.setAttribute('switch', '');
+    i.tabIndex = -1;
+    l.appendChild(i);
+    document.body.appendChild(l);
+    return l;
+  })();
+  function haptic(times = 1) {
+    if (navigator.vibrate && navigator.vibrate(times > 1 ? [18, 70, 18] : 15)) return;
+    hapticLabel.click();
+    for (let k = 1; k < times; k++) setTimeout(() => hapticLabel.click(), k * 110);
+  }
+  // A light tick for every button and link tap.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('button:not(#btn-shutter), a, .tab')) haptic(); // shutter has its own double tick
+  }, true);
+
   // ---------- storage (IndexedDB) ----------
   const DB = {
     db: null,
@@ -70,6 +95,13 @@
     get(store, id) { return this.tx(store, 'readonly', (s) => s.get(id)); },
     del(store, id) { return this.tx(store, 'readwrite', (s) => s.delete(id)); },
     all(store) { return this.tx(store, 'readonly', (s) => s.getAll()); },
+    latestCapture() {
+      return new Promise((resolve, reject) => {
+        const req = this.db.transaction('captures').objectStore('captures').index('ts').openCursor(null, 'prev');
+        req.onsuccess = () => resolve(req.result ? req.result.value : null);
+        req.onerror = () => reject(req.error);
+      });
+    },
   };
 
   // ---------- settings ----------
@@ -114,7 +146,8 @@
     if (stream) stream.getTracks().forEach((t) => t.stop());
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width: { ideal: 3840 }, height: { ideal: 2160 } },
+        // 1080p keeps the preview smooth on iPhone; 4K made Safari stutter.
+        video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       });
       video.srcObject = stream;
@@ -129,13 +162,23 @@
     }
   }
 
-  function grabPhoto() {
+  // Freeze the current frame instantly; JPEG encoding happens afterwards so listening starts at once.
+  function grabFrame() {
     const w = video.videoWidth, h = video.videoHeight;
-    if (!w || !h) return Promise.resolve(null);
+    if (!w || !h) return null;
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(video, 0, 0, w, h);
-    return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+    return c;
+  }
+  const toJpeg = (canvas, q) => new Promise((r) => (canvas ? canvas.toBlob(r, 'image/jpeg', q) : r(null)));
+  function makeThumb(canvas) {
+    if (!canvas) return Promise.resolve(null);
+    const s = 360 / Math.min(canvas.width, canvas.height);
+    const t = document.createElement('canvas');
+    t.width = Math.round(canvas.width * s); t.height = Math.round(canvas.height * s);
+    t.getContext('2d').drawImage(canvas, 0, 0, t.width, t.height);
+    return toJpeg(t, 0.8);
   }
 
   function pickMime() {
@@ -143,61 +186,166 @@
     return types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
   }
 
+  let stopListening = null; // set while recording; calling it ends the clip early
+
   function recordAudio(secs, onTick) {
     return new Promise((resolve) => {
       const tracks = stream ? stream.getAudioTracks() : [];
       if (!tracks.length || !window.MediaRecorder) return resolve(null);
       const mime = pickMime();
-      const rec = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : undefined);
+      let rec;
+      try { rec = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : undefined); }
+      catch { return resolve(null); }
       const chunks = [];
+      let lastShown = -1;
       rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
-      rec.onstop = () => resolve(chunks.length ? new Blob(chunks, { type: rec.mimeType || mime || 'audio/mp4' }) : null);
+      rec.onstop = () => { stopListening = null; resolve(chunks.length ? new Blob(chunks, { type: rec.mimeType || mime || 'audio/mp4' }) : null); };
+      const stop = () => { if (rec.state !== 'inactive') rec.stop(); };
+      stopListening = stop;
       rec.start();
       const t0 = performance.now();
       const tick = () => {
+        if (rec.state === 'inactive') return;
         const el = (performance.now() - t0) / 1000;
-        onTick(Math.min(el / secs, 1), Math.max(0, Math.ceil(secs - el)));
-        if (el >= secs) { if (rec.state !== 'inactive') rec.stop(); }
+        const left = Math.max(0, Math.ceil(secs - el));
+        onTick(Math.min(el / secs, 1), left, left !== lastShown);
+        lastShown = left;
+        if (el >= secs) stop();
         else requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     });
   }
 
-  async function shoot() {
-    if (busy || !stream) return;
-    busy = true;
-    $('#btn-shutter').disabled = true;
-    const flash = $('#flash');
-    flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
-    if (navigator.vibrate) navigator.vibrate(30);
-
-    const ts = Date.now();
-    const photo = await grabPhoto();
-    const loc = lastLoc && Date.now() - lastLoc.at < 5 * 60 * 1000 ? { ...lastLoc } : null;
-
+  // Shows the listening ring and records; shared by "take photo" and "listen again".
+  async function listen() {
     const secs = Settings.secs;
-    const ring = $('#ring-fg'), lbl = $('#listen-secs');
+    const ring = $('#ring-fg'), lbl = $('#listen-secs'), shutter = $('#btn-shutter');
+    hideResult();
     $('#listening').hidden = false;
-    const audio = await recordAudio(secs, (p, left) => {
+    shutter.classList.add('recording');
+    shutter.setAttribute('aria-label', 'Stop listening');
+    const t0 = Date.now();
+    const audio = await recordAudio(secs, (p, left, changed) => {
       ring.style.strokeDashoffset = String(339.3 * (1 - p));
-      lbl.textContent = left;
+      if (changed) lbl.textContent = left;
     });
     $('#listening').hidden = true;
     ring.style.strokeDashoffset = '339.3';
+    shutter.classList.remove('recording');
+    shutter.setAttribute('aria-label', 'Take photo and identify song');
+    return { audio, short: Date.now() - t0 < 3500 };
+  }
+
+  let lastShotId = null;
+
+  async function shoot() {
+    if (stopListening) { stopListening(); return; } // shutter doubles as stop
+    if (busy || !stream) return;
+    busy = true;
+    const flash = $('#flash');
+    flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+    haptic(2);
+
+    const ts = Date.now();
+    const frame = grabFrame();
+    const photoP = toJpeg(frame, 0.9);
+    const thumbP = makeThumb(frame);
+    const loc = lastLoc && Date.now() - lastLoc.at < 5 * 60 * 1000 ? { ...lastLoc } : null;
+
+    const { audio, short } = await listen();
+    haptic();
+    const [photo, thumb] = await Promise.all([photoP, thumbP]);
 
     const cap = {
-      id: uid(), ts, photo, audio, audioType: audio ? audio.type : null,
+      id: uid(), ts, photo, thumb, audio, audioType: audio ? audio.type : null,
       loc: loc ? { lat: loc.lat, lon: loc.lon, acc: loc.acc } : null,
       venue: null, song: null, recog: 'pending', facts: null, eventId: null,
     };
     await DB.put('captures', cap);
+    lastShotId = cap.id;
     refreshLastThumb();
     busy = false;
-    $('#btn-shutter').disabled = false;
-    toast('Saved. Working out the song…');
+    if (short) toast('Short clip – songs are easier to catch with 6+ seconds.');
+    showResult(cap);
     enrich(cap.id);
   }
+
+  // Record a fresh clip for an existing photo (e.g. when no song was found).
+  async function relisten(id) {
+    if (busy || !stream) { toast('Open the camera first'); return; }
+    if (currentView !== 'camera') go('camera');
+    busy = true;
+    const { audio } = await listen();
+    haptic();
+    const cap = await DB.get('captures', id);
+    busy = false;
+    if (!cap) return;
+    if (!audio) { toast('No sound recorded'); return; }
+    Object.assign(cap, { audio, audioType: audio.type, recog: 'pending', song: null, recogMsg: null, facts: null });
+    await DB.put('captures', cap);
+    lastShotId = id;
+    showResult(cap);
+    enrich(id);
+  }
+
+  // ---------- result banner (camera screen) ----------
+  let resultTimer;
+  function hideResult() { clearTimeout(resultTimer); $('#result').hidden = true; }
+  function showResult(c) {
+    if (currentView !== 'camera' || c.id !== lastShotId) return;
+    const el = $('#result');
+    const art = (inner, img) => `<div class="r-art"${img ? ` style="background-image:url('${esc(img)}')"` : ''}>${inner || ''}</div>`;
+    const btn = (label, act, main) => `<button class="r-btn${main ? ' main' : ''}" data-act="${act}">${label}</button>`;
+    let html = '', cls = 'result', autoHide = 0;
+    switch (c.recog) {
+      case 'pending':
+        html = art('<div class="spinner"></div>') + `<div><div class="r-title">${navigator.onLine ? 'Identifying the song…' : 'Saved offline'}</div><div class="r-sub">${navigator.onLine ? 'Hang tight, this takes a few seconds' : 'The song will be identified when you\'re back online'}</div></div><div></div>`;
+        if (!navigator.onLine) autoHide = 6000;
+        break;
+      case 'found':
+        cls += ' found';
+        html = art(c.song.cover ? '' : '♪', c.song.cover) + `<div><div class="r-title">${esc(c.song.title)}</div><div class="r-sub">${esc(c.song.artist)}</div></div>` +
+          `<div class="r-actions">${c.song.links.all ? `<a class="r-btn main" href="${esc(c.song.links.all)}" target="_blank" rel="noopener">Listen</a>` : ''}${btn('Details', 'open')}</div>`;
+        autoHide = 12000;
+        break;
+      case 'none':
+        html = art('🎧') + `<div><div class="r-title">No song found</div><div class="r-sub">No music, or too much crowd noise. Photo and sound are saved.</div></div>` +
+          `<div class="r-actions">${btn('Listen again', 'relisten', true)}${btn('Details', 'open')}</div>`;
+        autoHide = 15000;
+        break;
+      case 'nokey':
+        html = art('🔑') + `<div><div class="r-title">Photo saved</div><div class="r-sub">Add your song recognition key to identify songs.</div></div><div class="r-actions">${btn('Settings', 'settings', true)}</div>`;
+        break;
+      case 'noaudio':
+        html = art('🔇') + `<div><div class="r-title">No sound recorded</div><div class="r-sub">Check microphone access for Safari.</div></div><div class="r-actions">${btn('Details', 'open')}</div>`;
+        autoHide = 8000;
+        break;
+      case 'blocked':
+        html = art('⚠️') + `<div><div class="r-title">Recognition blocked</div><div class="r-sub">Set up the relay in Settings, then retry.</div></div><div class="r-actions">${btn('Settings', 'settings', true)}</div>`;
+        break;
+      default:
+        html = art('⚠️') + `<div><div class="r-title">Couldn't identify</div><div class="r-sub">${esc(c.recogMsg || 'Something went wrong.')}</div></div><div class="r-actions">${btn('Try again', 'retry', true)}</div>`;
+    }
+    el.className = cls;
+    el.innerHTML = html + '<button class="r-close" data-act="close" aria-label="Dismiss">✕</button>';
+    el.dataset.id = c.id;
+    el.hidden = false;
+    clearTimeout(resultTimer);
+    if (autoHide) resultTimer = setTimeout(hideResult, autoHide);
+  }
+  $('#result').addEventListener('click', (e) => {
+    const id = $('#result').dataset.id;
+    const act = (e.target.closest('[data-act]') || {}).dataset?.act;
+    if (e.target.closest('a')) return;
+    if (act === 'close') return hideResult();
+    if (act === 'relisten') return relisten(id);
+    if (act === 'settings') return go('settings');
+    if (act === 'retry') { DB.get('captures', id).then((c) => { if (c) { c.recog = 'pending'; DB.put('captures', c).then(() => { showResult(c); enrich(id); }); } }); return; }
+    hideResult();
+    openCapture(id, 'camera');
+  });
+  $('#btn-listen-stop').addEventListener('click', () => { if (stopListening) stopListening(); });
 
   // ---------- location ----------
   let lastLoc = null;
@@ -414,18 +562,26 @@
       if (!cap) return;
       const save = async (patch) => { cap = { ...(await DB.get('captures', id)), ...patch }; await DB.put('captures', cap); refreshOpen(id, cap.eventId); };
 
+      // Venue lookup runs alongside recognition so the song result isn't held up by maps.
+      let venueP = null;
       if (cap.loc && !cap.venue) {
         const near = chipVenue && distM(cap.loc, chipVenue) < 150 ? chipVenue : null;
-        const v = near || await findVenue(cap.loc).catch(() => null);
-        if (v) await save({ venue: v });
+        venueP = near ? Promise.resolve(near) : findVenue(cap.loc).catch(() => null);
       }
       if (cap.recog === 'pending' || cap.recog === 'nokey' || cap.recog === 'blocked' || cap.recog === 'error') {
         const r = await recognise(cap);
-        await save(r);
-        if (r.recog === 'found') toast(`♪ ${r.song.title} — ${r.song.artist}`, 3500);
-        else if (r.recog === 'none') toast('No song recognised. Saved with facts instead.');
-        else if (r.recog === 'nokey') toast('Add your song recognition key in Settings to identify songs.', 4000);
-        else if (r.recog === 'blocked') toast('Recognition was blocked. See Settings › Relay.', 4000);
+        await save({ recogMsg: null, ...r });
+        const onCamera = currentView === 'camera' && id === lastShotId;
+        if (onCamera) {
+          showResult(cap);
+          if (r.recog === 'found') haptic(2);
+          else if (r.recog !== 'pending') haptic();
+        } else if (r.recog === 'found') toast(`♪ ${r.song.title} — ${r.song.artist}`, 3500);
+        else if (r.recog === 'none') toast('No song found for that photo.');
+      }
+      if (venueP) {
+        const v = await venueP;
+        if (v) await save({ venue: v });
       }
       if (!cap.facts && navigator.onLine) {
         const facts = await gatherFacts(cap).catch(() => null);
@@ -453,12 +609,11 @@
 
   // ---------- rendering ----------
   async function refreshLastThumb() {
-    const caps = await DB.all('captures');
-    const last = caps.sort((a, b) => b.ts - a.ts)[0];
+    const last = await DB.latestCapture();
     const btn = $('#btn-last');
     if (btn.dataset.url) URL.revokeObjectURL(btn.dataset.url);
-    if (last && last.photo) {
-      const u = URL.createObjectURL(last.photo);
+    if (last && (last.thumb || last.photo)) {
+      const u = URL.createObjectURL(last.thumb || last.photo);
       btn.dataset.url = u; btn.dataset.id = last.id;
       btn.style.backgroundImage = `url("${u}")`;
     } else { btn.style.backgroundImage = ''; btn.dataset.id = ''; }
@@ -498,7 +653,7 @@
       case 'pending':
         return `<div class="card status"><div class="spinner"></div><div>${navigator.onLine ? 'Identifying the song…' : 'Offline. The song will be identified when you\'re back online.'}</div></div>`;
       case 'none':
-        return `<div class="card status"><div>🎧</div><div>No song recognised, either no music or too much crowd noise. The sound clip is saved below.</div></div>`;
+        return `<div class="card status"><div>🎧</div><div>No song found, either no music or too much crowd noise. The sound clip is saved below.<br><button class="link-btn" data-relisten="${esc(c.id)}">Listen again (replaces the clip) ›</button></div></div>`;
       case 'nokey':
         return `<div class="card status"><div>🔑</div><div>Add your song recognition key in <button class="link-btn" data-go="settings">Settings</button> to identify this song.</div></div>`;
       case 'blocked':
@@ -561,7 +716,7 @@
       const songs = mine.filter((c) => c.song).length;
       const cover = mine.find((c) => c.photo);
       return `<button class="night-card" data-night="${esc(e.id)}">
-        <div class="cover" style="${cover ? `background-image:url('${blobURL(cover.photo)}')` : ''}"></div>
+        <div class="cover" style="${cover ? `background-image:url('${blobURL(cover.thumb || cover.photo)}')` : ''}"></div>
         <div><h3>${esc(e.name || e.venueName || 'A night out')}</h3>
           <div class="meta">${esc(fmtDate(e.start))}${e.area ? ' · ' + esc(e.area) : ''}</div>
           <div class="pills"><span class="pill">${mine.length} photo${mine.length === 1 ? '' : 's'}</span>${songs ? `<span class="pill hot">♪ ${songs} song${songs === 1 ? '' : 's'}</span>` : ''}</div>
@@ -592,7 +747,7 @@
           <a class="time" href="${esc(c.song.links.all || c.song.links.youtube)}" target="_blank" rel="noopener">${esc(fmtTime(c.ts))} ›</a></li>`).join('')}</ul>`
         : '<p class="fine">No songs identified yet on this night.</p>'}
       <div class="section-title">Photos · ${caps.length}</div>
-      <div class="grid">${caps.map((c) => `<button data-cap="${esc(c.id)}" style="background-image:url('${blobURL(c.photo)}')" aria-label="Photo at ${esc(fmtTime(c.ts))}">${c.song ? '<span class="note">♪</span>' : ''}</button>`).join('')}</div>
+      <div class="grid">${caps.map((c) => `<button data-cap="${esc(c.id)}" style="background-image:url('${blobURL(c.thumb || c.photo)}')" aria-label="Photo at ${esc(fmtTime(c.ts))}">${c.song ? '<span class="note">♪</span>' : ''}</button>`).join('')}</div>
     `;
     const inp = $('#night-body .night-name');
     const saveName = async () => {
@@ -662,6 +817,8 @@
   document.addEventListener('click', (e) => {
     const n = e.target.closest('[data-night]');
     if (n) { openNight(n.dataset.night); return; }
+    const rl = e.target.closest('[data-relisten]');
+    if (rl) { relisten(rl.dataset.relisten); return; }
     const c = e.target.closest('[data-cap]');
     if (c) openCapture(c.dataset.cap, 'night');
   });

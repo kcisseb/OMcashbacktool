@@ -1,6 +1,6 @@
 // Encore service worker: caches the app itself so it opens instantly and offline.
 // API calls (song recognition, maps, Wikipedia) always go to the network.
-const CACHE = 'encore-v1';
+const CACHE = 'encore-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
