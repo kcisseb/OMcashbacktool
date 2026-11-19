@@ -140,7 +140,6 @@
   const video = $('#viewfinder');
   let stream = null;
   let facing = 'environment';
-  let busy = false;
 
   async function startCamera() {
     if (stream) stream.getTracks().forEach((t) => t.stop());
@@ -197,7 +196,6 @@
       try { rec = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : undefined); }
       catch { return resolve(null); }
       const chunks = [];
-      let lastShown = -1;
       rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
       rec.onstop = () => { stopListening = null; resolve(chunks.length ? new Blob(chunks, { type: rec.mimeType || mime || 'audio/mp4' }) : null); };
       const stop = () => { if (rec.state !== 'inactive') rec.stop(); };
@@ -207,9 +205,7 @@
       const tick = () => {
         if (rec.state === 'inactive') return;
         const el = (performance.now() - t0) / 1000;
-        const left = Math.max(0, Math.ceil(secs - el));
-        onTick(Math.min(el / secs, 1), left, left !== lastShown);
-        lastShown = left;
+        onTick(Math.min(el / secs, 1));
         if (el >= secs) stop();
         else requestAnimationFrame(tick);
       };
@@ -217,76 +213,99 @@
     });
   }
 
-  // Shows the listening ring and records; shared by "take photo" and "listen again".
-  async function listen() {
-    const secs = Settings.secs;
-    const ring = $('#ring-fg'), lbl = $('#listen-secs'), shutter = $('#btn-shutter');
+  // ---------- background listening ----------
+  // One clip records at a time. Photos taken while it runs share that clip,
+  // and only one recognition call is made per clip.
+  let session = null;          // { ids: [], t0 }
+  const saving = new Map();    // capture id -> promise of it being written
+
+  function setCue(on) {
+    const shutter = $('#btn-shutter');
+    $('#listen-cue').hidden = !on;
+    shutter.classList.toggle('listening', on);
+    shutter.style.setProperty('--p', '0');
+  }
+
+  function startSession(ids) {
+    const s = { ids: [...ids], t0: Date.now() };
+    session = s;
     hideResult();
-    $('#listening').hidden = false;
-    shutter.classList.add('recording');
-    shutter.setAttribute('aria-label', 'Stop listening');
-    const t0 = Date.now();
-    const audio = await recordAudio(secs, (p, left, changed) => {
-      ring.style.strokeDashoffset = String(339.3 * (1 - p));
-      if (changed) lbl.textContent = left;
+    setCue(true);
+    const shutter = $('#btn-shutter');
+    recordAudio(Settings.secs, (p) => shutter.style.setProperty('--p', p.toFixed(3))).then(async (audio) => {
+      session = null;
+      setCue(false);
+      haptic();
+      if (audio && Date.now() - s.t0 < 3500) toast('Short clip – songs are easier to catch with 6+ seconds.');
+      await finishSession(s.ids, audio);
     });
-    $('#listening').hidden = true;
-    ring.style.strokeDashoffset = '339.3';
-    shutter.classList.remove('recording');
-    shutter.setAttribute('aria-label', 'Take photo and identify song');
-    return { audio, short: Date.now() - t0 < 3500 };
+    return s;
+  }
+
+  async function finishSession(ids, audio) {
+    await Promise.all(ids.map((id) => saving.get(id)));
+    for (const id of ids) {
+      const cap = await DB.get('captures', id);
+      if (!cap) continue;
+      Object.assign(cap, { audio, audioType: audio ? audio.type : null, recog: audio ? 'pending' : 'noaudio', song: null, recogMsg: null, facts: null });
+      await DB.put('captures', cap);
+      saving.delete(id);
+    }
+    const live = [];
+    for (const id of ids) if (await DB.get('captures', id)) live.push(id);
+    if (!live.length) return;
+    const [first, ...rest] = live;
+    lastShotId = first; // the result card speaks for this clip
+    refreshOpen(first);
+    await enrich(first);
+    const done = await DB.get('captures', first);
+    for (const id of rest) {
+      const cap = await DB.get('captures', id);
+      if (!cap) continue;
+      if (done && done.recog !== 'pending') {
+        Object.assign(cap, { recog: done.recog, song: done.song, recogMsg: done.recogMsg || null });
+        await DB.put('captures', cap);
+      }
+      enrich(id);
+    }
   }
 
   let lastShotId = null;
 
   async function shoot() {
-    if (stopListening) { stopListening(); return; } // shutter doubles as stop
-    if (busy || !stream) return;
-    busy = true;
+    if (!stream) return;
     const flash = $('#flash');
     flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
     haptic(2);
 
     const ts = Date.now();
     const frame = grabFrame();
-    const photoP = toJpeg(frame, 0.9);
-    const thumbP = makeThumb(frame);
+    const id = uid();
+    // Start (or join) the background clip right away, so the sound matches the moment.
+    if (session) session.ids.push(id); else startSession([id]);
+
     const loc = lastLoc && Date.now() - lastLoc.at < 5 * 60 * 1000 ? { ...lastLoc } : null;
-
-    const { audio, short } = await listen();
-    haptic();
-    const [photo, thumb] = await Promise.all([photoP, thumbP]);
-
-    const cap = {
-      id: uid(), ts, photo, thumb, audio, audioType: audio ? audio.type : null,
+    const write = Promise.all([toJpeg(frame, 0.9), makeThumb(frame)]).then(([photo, thumb]) => DB.put('captures', {
+      id, ts, photo, thumb, audio: null, audioType: null,
       loc: loc ? { lat: loc.lat, lon: loc.lon, acc: loc.acc } : null,
-      venue: null, song: null, recog: 'pending', facts: null, eventId: null,
-    };
-    await DB.put('captures', cap);
-    lastShotId = cap.id;
+      venue: null, song: null, recog: 'listening', facts: null, eventId: null,
+    }));
+    saving.set(id, write);
+    await write;
     refreshLastThumb();
-    busy = false;
-    if (short) toast('Short clip – songs are easier to catch with 6+ seconds.');
-    showResult(cap);
-    enrich(cap.id);
   }
 
   // Record a fresh clip for an existing photo (e.g. when no song was found).
   async function relisten(id) {
-    if (busy || !stream) { toast('Open the camera first'); return; }
-    if (currentView !== 'camera') go('camera');
-    busy = true;
-    const { audio } = await listen();
-    haptic();
+    if (!stream) { toast('Open the camera first'); return; }
+    if (session) { toast('Already listening – try again in a moment'); return; }
     const cap = await DB.get('captures', id);
-    busy = false;
     if (!cap) return;
-    if (!audio) { toast('No sound recorded'); return; }
-    Object.assign(cap, { audio, audioType: audio.type, recog: 'pending', song: null, recogMsg: null, facts: null });
+    cap.recog = 'listening';
     await DB.put('captures', cap);
-    lastShotId = id;
-    showResult(cap);
-    enrich(id);
+    toast('Listening again…');
+    startSession([id]);
+    refreshOpen(id, cap.eventId);
   }
 
   // ---------- result banner (camera screen) ----------
@@ -299,7 +318,11 @@
     const btn = (label, act, main) => `<button class="r-btn${main ? ' main' : ''}" data-act="${act}">${label}</button>`;
     let html = '', cls = 'result', autoHide = 0;
     switch (c.recog) {
+      case 'listening':
+        hideResult();
+        return;
       case 'pending':
+        if (navigator.onLine) { hideResult(); return; } // stay quiet while identifying
         html = art('<div class="spinner"></div>') + `<div><div class="r-title">${navigator.onLine ? 'Identifying the song…' : 'Saved offline'}</div><div class="r-sub">${navigator.onLine ? 'Hang tight, this takes a few seconds' : 'The song will be identified when you\'re back online'}</div></div><div></div>`;
         if (!navigator.onLine) autoHide = 6000;
         break;
@@ -345,7 +368,7 @@
     hideResult();
     openCapture(id, 'camera');
   });
-  $('#btn-listen-stop').addEventListener('click', () => { if (stopListening) stopListening(); });
+  $('#listen-cue').addEventListener('click', () => { if (stopListening) stopListening(); });
 
   // ---------- location ----------
   let lastLoc = null;
@@ -602,7 +625,13 @@
 
   async function retryAll() {
     const caps = await DB.all('captures');
-    const todo = caps.filter((c) => c.recog === 'pending' || c.recog === 'error' || c.recog === 'blocked' || (c.recog === 'nokey' && Settings.key) || !c.eventId || (!c.facts && navigator.onLine) || (c.loc && !c.venue));
+    for (const c of caps) {
+      if (c.recog === 'listening' && !saving.has(c.id) && Date.now() - c.ts > 120000) {
+        c.recog = c.audio ? 'pending' : 'noaudio';
+        await DB.put('captures', c);
+      }
+    }
+    const todo = caps.filter((c) => c.recog !== 'listening' && (c.recog === 'pending' || c.recog === 'error' || c.recog === 'blocked' || (c.recog === 'nokey' && Settings.key) || !c.eventId || (!c.facts && navigator.onLine) || (c.loc && !c.venue)));
     for (const c of todo) { await enrich(c.id); await sleep(400); }
     return todo.length;
   }
@@ -650,6 +679,8 @@
             ${link(L.all, 'All platforms', true)}${link(L.apple, 'Apple Music')}${link(L.spotify, 'Spotify')}${link(L.deezer, 'Deezer')}${link(L.youtube, 'YouTube Music')}
           </div></div>`;
       }
+      case 'listening':
+        return `<div class="card status"><div class="spinner"></div><div>Listening…</div></div>`;
       case 'pending':
         return `<div class="card status"><div class="spinner"></div><div>${navigator.onLine ? 'Identifying the song…' : 'Offline. The song will be identified when you\'re back online.'}</div></div>`;
       case 'none':

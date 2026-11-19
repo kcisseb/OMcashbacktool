@@ -38,20 +38,9 @@
       </button>
     </header>
 
-    <div id="listening" class="listening-wrap" hidden>
-      <button id="btn-listen-stop" class="listening" aria-label="Stop listening now">
-        <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
-          <circle cx="60" cy="60" r="54" class="ring-bg"/>
-          <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg"/>
-        </svg>
-        <span class="listening-text">
-          <strong id="listen-secs">10</strong>
-          <span>Listening…</span>
-        </span>
-        <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-      </button>
-      <span class="stop-pill">Tap to stop early</span>
-    </div>
+    <button id="listen-cue" class="listen-cue" hidden aria-label="Listening in the background. Tap to stop.">
+      <span class="rec-dot"></span>Listening<span class="cue-stop">Stop</span>
+    </button>
 
     <div id="result" class="result" hidden></div>
 
